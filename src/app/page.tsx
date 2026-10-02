@@ -7,9 +7,10 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { formatDistanceToNow } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
-import { useState } from 'react';
-import { useCommandStore } from '@/lib/store';
+import { useEffect, useState } from 'react';
+import { useCommandStore, STALE_MS } from '@/lib/store';
 import { SearchMap } from '@/components/SearchMap';
+import { MergePanel } from '@/components/MergePanel';
 
 const missionSchema = z.object({
   title: z.string().min(3, '任务名称至少3个字'),
@@ -37,6 +38,17 @@ export default function CommandPage() {
     reset({ title: '', areaId: state.areas[0]?.id, assetIds: selectedAssets, priority: 'urgent', note: '' });
   };
 
+  // 离线期间自动积累位置观测与覆盖记录
+  useEffect(() => {
+    if (!state.offline) return;
+    const timer = setInterval(() => state.accumulateOfflineRecords(), 20_000);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.offline]);
+
+  const pendingMerge = state.observations.filter((o) => !o.merged).length + state.coverageReports.filter((r) => !r.merged).length;
+  const pendingConflicts = state.conflicts.filter((c) => c.status === 'pending').length;
+
   return (
     <main className={state.lowBandwidth ? 'low-bandwidth' : ''}>
       <Stack p="xl" gap="lg" maw={1600} mx="auto">
@@ -45,20 +57,27 @@ export default function CommandPage() {
           <Group><Switch label="低带宽" checked={state.lowBandwidth} onChange={state.toggleBandwidth} /><Switch label="模拟离线" checked={state.offline} onChange={state.toggleOffline} /></Group>
         </Group>
 
-        <SimpleGrid cols={{ base: 1, md: 4 }}>
+        <SimpleGrid cols={{ base: 2, md: 5 }}>
           {[
             ['活动搜索区', state.areas.filter((item) => item.status === 'active').length],
+            ['在岗单位', state.assets.filter((item) => item.status !== 'offline' && state.missions.some((m) => m.assetIds.includes(item.id) && m.status !== 'closed')).length],
             ['在线单位', state.assets.filter((item) => item.status !== 'offline').length],
             ['进行中任务', state.missions.filter((item) => item.status === 'in_progress').length],
-            ['过期位置', state.assets.filter((item) => Date.now() - new Date(item.lastSeen).getTime() > 10 * 60_000).length]
+            ['过期位置', state.assets.filter((item) => Date.now() - new Date(item.lastSeen).getTime() > STALE_MS).length],
+            ['待合并记录', pendingMerge],
+            ['待决冲突', pendingConflicts]
           ].map(([label, value]) => <Card key={String(label)} withBorder><Text size="sm" c="dimmed">{label}</Text><Title order={2}>{value}</Title></Card>)}
         </SimpleGrid>
 
         <Grid gutter="lg">
           <Grid.Col span={{ base: 12, lg: 8 }}><Card withBorder><Group justify="space-between"><Title order={3}>搜救态势</Title><Text size="sm">风况：{brief.data?.wind ?? '读取中'} · 能见度：{brief.data?.visibility ?? '--'}</Text></Group><SearchMap areas={state.areas} assets={state.assets} /></Card></Grid.Col>
-          <Grid.Col span={{ base: 12, lg: 4 }}><Card withBorder h="100%"><Title order={3}>单位状态</Title><Stack mt="md">{state.assets.map((asset) => {
-            const stale = Date.now() - new Date(asset.lastSeen).getTime() > 10 * 60_000;
-            return <Card key={asset.id} withBorder padding="sm"><Group justify="space-between"><b>{asset.name}</b><Badge color={asset.status === 'offline' ? 'red' : asset.status === 'assigned' ? 'blue' : 'teal'}>{asset.status}</Badge></Group><Text size="xs" c={stale ? 'red' : 'dimmed'}>{stale ? '位置已过期 · ' : ''}{formatDistanceToNow(new Date(asset.lastSeen), { addSuffix: true, locale: zhCN })}</Text><Group mt="xs"><Button size="compact-xs" onClick={() => state.setAssetStatus(asset.id, asset.status === 'offline' ? 'ready' : 'offline')}>{asset.status === 'offline' ? '恢复在线' : '标记失联'}</Button></Group></Card>;
+          <Grid.Col span={{ base: 12, lg: 4 }}><Card withBorder h="100%"><Title order={3}>单位在岗状态</Title><Stack mt="md">{state.assets.map((asset) => {
+            const stale = Date.now() - new Date(asset.lastSeen).getTime() > STALE_MS;
+            const onMission = state.missions.some((m) => m.assetIds.includes(asset.id) && m.status !== 'closed');
+            const dutyLabel = asset.status === 'offline' ? '失联' : onMission ? '在岗 · 任务中' : '在岗 · 待命';
+            const dutyColor = asset.status === 'offline' ? 'red' : onMission ? 'blue' : 'teal';
+            const pendingCount = state.observations.filter((o) => o.assetId === asset.id && !o.merged).length + state.coverageReports.filter((r) => r.assetId === asset.id && !r.merged).length;
+            return <Card key={asset.id} withBorder padding="sm"><Group justify="space-between"><b>{asset.name}</b><Group gap={4}><Badge size="xs" color={dutyColor}>{dutyLabel}</Badge><Badge color={asset.status === 'offline' ? 'red' : asset.status === 'assigned' ? 'blue' : 'teal'}>{asset.status}</Badge></Group></Group><Text size="xs" c={stale ? 'red' : 'dimmed'}>{stale ? '位置已过期 · ' : ''}观测于 {formatDistanceToNow(new Date(asset.lastSeen), { addSuffix: true, locale: zhCN })}{pendingCount > 0 ? ` · 待合并 ${pendingCount}` : ''}</Text><Group mt="xs"><Button size="compact-xs" onClick={() => state.setAssetStatus(asset.id, asset.status === 'offline' ? 'ready' : 'offline')}>{asset.status === 'offline' ? '恢复在线' : '标记失联'}</Button></Group></Card>;
           })}</Stack></Card></Grid.Col>
         </Grid>
 
@@ -68,6 +87,8 @@ export default function CommandPage() {
         </Grid>
 
         <Card withBorder><Title order={3}>联合事件时间线</Title><Timeline mt="lg" active={1} bulletSize={18} lineWidth={2}>{state.events.slice(0, 10).map((event) => <Timeline.Item key={event.id} title={`${event.actor} · ${new Date(event.time).toLocaleTimeString()}`}><Text size="sm">{event.message}</Text></Timeline.Item>)}</Timeline></Card>
+
+        <MergePanel />
       </Stack>
     </main>
   );
