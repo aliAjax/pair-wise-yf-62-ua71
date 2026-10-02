@@ -21,7 +21,7 @@ export function SearchMap({ areas, assets }: { areas: SearchArea[]; assets: Resc
           map.addLayer({ id: `${area.id}-fill`, type: 'fill', source: area.id, paint: { 'fill-color': area.status === 'active' ? '#0e7490' : '#f59e0b', 'fill-opacity': .22 } });
           map.fitBounds(new LngLatBounds([area.bounds[0], area.bounds[1]], [area.bounds[2], area.bounds[3]]), { padding: 60 });
         });
-        markersRef.current = assets.map((asset) => new MapMarker({ color: asset.status === 'offline' ? '#dc2626' : '#0f766e' }).setLngLat([asset.lng, asset.lat]).addTo(map));
+        markersRef.current = assets.map((asset) => new MapMarker({ color: asset.status === 'offline' ? '#dc2626' : asset.status === 'returning' ? '#f59e0b' : '#0f766e' }).setLngLat([asset.lng, asset.lat]).addTo(map));
       });
     });
     return () => { disposed = true; markersRef.current.forEach((marker) => marker.remove()); mapRef.current?.remove(); };
